@@ -1,0 +1,64 @@
+Test 1 : L'écriture et la lecture de base (Le "Hello World")
+
+On commence par valider qu'un petit fichier s'écrit et se lit sans erreur.
+Bash
+
+# Écriture
+echo "Chorizo" | sudo tee mnt/test.txt
+
+# Lecture
+cat mnt/test.txt
+
+    Ce que tu vérifies : Est-ce que cat t'affiche bien "Chorizo" ? Est-ce que ls -l mnt/ affiche une taille de fichier cohérente (8 octets avec le saut de ligne) ?
+
+Test 2 : Le passage des frontières de blocs (Plus de 4096 octets)
+
+C’est ici que ta boucle for (; to_write > 0; iblock++) et tes allocations sont testées. On va écrire un fichier qui fait plusieurs blocs (ex: 10 Ko, soit un peu plus de 2 blocs de 4 Ko).
+Bash
+
+# Écriture de 10 Ko de données aléatoires (mais reproductibles) textuelles
+head -c 10240 /dev/urandom | base64 | sudo tee mnt/gros_fichier.txt > /dev/null
+
+# Lecture et vérification
+ls -l mnt/gros_fichier.txt
+cat mnt/gros_fichier.txt
+
+    Ce que tu vérifies : Est-ce que le fichier fait bien 10240 octets ? Est-ce que cat affiche tout le contenu sans s'arrêter brusquement au bout de 4096 octets ?
+
+Test 3 : L'écrasement partiel (Le Read-Modify-Write)
+
+On teste le cas où on écrit par-dessus un fichier existant sans l'agrandir.
+Bash
+
+# 1. On crée un fichier rempli de 'A' (ex: 50 octets)
+python3 -c "print('A' * 50)" | sudo tee mnt/modif.txt
+
+# 2. On écrit des 'B' au début sans utiliser '>' (qui viderait le fichier avec O_TRUNC)
+# On utilise dd avec notrunc pour faire un write() direct au milieu
+echo -n "BBBBB" | sudo dd of=mnt/modif.txt bs=1 seek=0 conv=notrunc
+
+# 3. On regarde le résultat
+cat mnt/modif.txt
+
+    Ce que tu vérifies : Est-ce que le fichier contient bien 5 B suivis de 45 A ? Si tu vois 5 B suivis de vide (ou si le fichier a rétréci), c'est que ton write gère mal le fait d'écraser des blocs existants.
+
+Test 4 : Le mode Append (O_APPEND)
+
+On vérifie que ton implémentation du drapeau O_APPEND fonctionne et écrit bien à la fin.
+Bash
+
+echo "Debut" | sudo tee mnt/append.txt
+echo "Fin" | sudo tee -a mnt/append.txt  # Le -a force le mode O_APPEND
+
+cat mnt/append.txt
+
+    Ce que tu vérifies : Le fichier doit afficher "Debut" puis "Fin" sur la ligne du dessous.
+
+Le juge suprême : dmesg
+
+Après chaque commande, ou si une commande se bloque (le terminal freeze), ouvre un autre onglet et tape :
+Bash
+
+dmesg | tail -n 50
+
+C’est là que tu verras tes pr_err() ("Failed to allocate new block", etc.) ou, si le code a un bug de pointeur, le fameux Kernel Bug/Panic avec la pile d'appels. Si dmesg reste totalement muet et propre, ton code est sain !
