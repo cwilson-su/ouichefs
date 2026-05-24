@@ -363,6 +363,11 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 	off = off % OUICHEFS_BLOCK_SIZE;
 
 	for (; to_write > 0; iblock++) {
+		size_t to_copy = OUICHEFS_BLOCK_SIZE - off;
+
+		if (to_write < to_copy)
+			to_copy = to_write;
+
 		block = le32_to_cpu(index->blocks[iblock]);
 
 		if (block == 0) {
@@ -383,8 +388,9 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 				break;
 			}
 
-			if (off > 0)
-				memset(bh_data->b_data, 0, off);
+			// Nettoyage du buffer récupéré
+			memset(bh_data->b_data, 0, OUICHEFS_BLOCK_SIZE);
+				
 		} else {
 			bh_data = sb_bread(sb, block);
 
@@ -394,11 +400,6 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 				break;
 			}
 		}
-
-		size_t to_copy = OUICHEFS_BLOCK_SIZE - off;
-
-		if (to_write < to_copy)
-			to_copy = to_write;
 
 		size_t ret = (size_t)copy_from_user((bh_data->b_data + off), (buf + bytes_copied), to_copy);
 
@@ -431,6 +432,56 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 	return bytes_copied;
 }
 
+#define OUICHEFS_IOC_GET_EXTENTS _IO('O', 1)
+
+long ouichefs_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
+	switch (cmd) {
+		case OUICHEFS_IOC_GET_EXTENTS :
+			{
+				struct inode* inode = file->f_inode;
+				struct super_block *sb = inode->i_sb;
+				struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+				struct ouichefs_file_index_block *index;
+				struct buffer_head *bh_index, *bh_data;
+				sector_t iblock;
+				int cpt = 0;
+				int nb_extents = 0;
+
+				/* Read index block from disk */
+				bh_index = sb_bread(sb, ci->index_block);
+				if (!bh_index){
+					pr_err("Failed to read inode block %d\n", ci->index_block);
+					return -EIO;
+				}
+				index = (struct ouichefs_file_index_block *)bh_index->b_data;			
+				
+				for (int i = 0; i < OUICHEFS_MAX_EXTENTS; i++) {
+					if (index->blocks[i].start == 0)
+						break;
+
+					nb_extents++;
+				}
+
+				pr_info("ouichefs: extents for inode %lu: %d extent(s)\n", inode->i_ino, nb_extents);
+
+				for (iblock = 0; index->blocks[iblock].start != 0; iblock++) {
+					struct ouichefs_extent ext = index->blocks[iblock];
+
+					pr_info("	[%d] start=%d count=%d (blocks %d-%d)\n", cpt++, ext.start, ext.count, ext.start, ext.start + ext.count - 1);
+				}
+
+				brelse(bh_index);
+
+				break;
+			}
+
+		default :
+			return -ENOTTY;
+	}
+
+	return 0;
+}
+
 const struct file_operations ouichefs_file_ops = {
 	.owner = THIS_MODULE,
 	.open = ouichefs_open,
@@ -438,6 +489,7 @@ const struct file_operations ouichefs_file_ops = {
 	//.read_iter = generic_file_read_iter,
 	//.write_iter = generic_file_write_iter,
 	.fsync = generic_file_fsync,
-	.read = ouichefs_read,
-	.write = ouichefs_write,
+	.read = ouichefs_read,	// Q 1.2
+	.write = ouichefs_write,	// Q 1.2
+	.unlocked_ioctl = ouichefs_ioctl,	// Q 1.3
 };
