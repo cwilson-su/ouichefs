@@ -16,6 +16,36 @@
 #include "ouichefs.h"
 #include "bitmap.h"
 
+/* 1.4.1 Logical-to-physical block translation */
+static uint32_t ouichefs_extent_get_block(
+	struct ouichefs_extent *extents, uint32_t logical_block)
+{
+	sector_t iblock;
+	uint32_t physical_block = 0;
+	uint32_t block = 0;
+
+	for (iblock = 0; iblock < OUICHEFS_MAX_EXTENTS; iblock++) {
+		uint32_t start = extents[iblock].start;
+		uint32_t count = extents[iblock].count;
+
+		if (count == 0)
+			break;
+
+		if (logical_block >= block && logical_block < block + count) {
+
+			if (start == 0)
+				break;
+
+			physical_block = start + logical_block - block;
+			break;
+		}
+		
+		block += count;
+	}
+
+	return physical_block;
+}
+
 /*
  * Map the buffer_head passed in argument with the iblock-th block of the file
  * represented by inode. If the requested block is not allocated and create is
@@ -45,7 +75,9 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
 	 * Check if iblock is already allocated. If not and create is true,
 	 * allocate it. Else, get the physical block number.
 	 */
-	if (index->blocks[iblock] == 0) {
+
+	//if (index->blocks[iblock] == 0) {
+	if (index->blocks[iblock].count == 0) {
 		if (!create) {
 			ret = 0;
 			goto brelse_index;
@@ -55,10 +87,13 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
 			ret = -ENOSPC;
 			goto brelse_index;
 		}
-		index->blocks[iblock] = cpu_to_le32(bno);
+		//index->blocks[iblock] = cpu_to_le32(bno);
+		index->blocks[iblock].start = bno;
+		index->blocks[iblock].count = 1;
 		mark_buffer_dirty(bh_index);
 	} else {
-		bno = le32_to_cpu(index->blocks[iblock]);
+		//bno = le32_to_cpu(index->blocks[iblock]);
+		bno = ouichefs_extent_get_block(index->blocks, iblock);
 	}
 
 	/* Map the physical block to the given buffer_head */
@@ -137,7 +172,7 @@ static int ouichefs_write_end(struct file *file, struct address_space *mapping,
 	struct inode *inode = file->f_inode;
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct super_block *sb = inode->i_sb;
-
+	
 	/* Complete the write() */
 	ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
 	if (ret < len) {
@@ -175,8 +210,10 @@ static int ouichefs_write_end(struct file *file, struct address_space *mapping,
 
 			for (i = inode->i_blocks - 1; i < nr_blocks_old - 1;
 			     i++) {
-				put_block(OUICHEFS_SB(sb), le32_to_cpu(index->blocks[i]));
-				index->blocks[i] = 0;
+				//put_block(OUICHEFS_SB(sb), le32_to_cpu(index->blocks[i]));
+				//index->blocks[i] = 0;
+				put_block(OUICHEFS_SB(sb), index->blocks[i].start);
+				index->blocks[i] = (struct ouichefs_extent){0, 0};
 			}
 			mark_buffer_dirty(bh_index);
 			brelse(bh_index);
@@ -213,9 +250,11 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 			return -EIO;
 		index = (struct ouichefs_file_index_block *)bh_index->b_data;
 
-		for (iblock = 0; index->blocks[iblock] != 0; iblock++) {
-			put_block(sbi, le32_to_cpu(index->blocks[iblock]));
-			index->blocks[iblock] = 0;
+		for (iblock = 0; index->blocks[iblock].count != 0; iblock++) {
+			//put_block(sbi, le32_to_cpu(index->blocks[iblock]));
+			//index->blocks[iblock] = 0;
+			put_block(sbi, index->blocks[iblock].start);
+			index->blocks[iblock] = (struct ouichefs_extent){0, 0};
 		}
 		inode->i_size = 0;
 		inode->i_blocks = 1;
@@ -227,7 +266,9 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
-ssize_t ouichefs_read(struct file *file, char __user *buf, size_t len, loff_t *offset) {
+
+/* 1.2 Reimplementation of the read and the write functions */
+/*ssize_t ouichefs_read(struct file *file, char __user *buf, size_t len, loff_t *offset) {
 	struct inode* inode = file->f_inode;
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
@@ -246,7 +287,7 @@ ssize_t ouichefs_read(struct file *file, char __user *buf, size_t len, loff_t *o
 	if (off + len > inode->i_size)
 		to_read = inode->i_size - off;
 
-	/* Read index block from disk */
+	// Read index block from disk 
 	bh_index = sb_bread(sb, ci->index_block);
 	if (!bh_index){
 		pr_err("Failed to read inode block %d\n", ci->index_block);
@@ -314,7 +355,7 @@ ssize_t ouichefs_read(struct file *file, char __user *buf, size_t len, loff_t *o
 	*offset += bytes_copied;
 
 	return bytes_copied;
-}
+}*/
 
 ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, loff_t* offset) {
 	struct inode* inode = file->f_inode;
@@ -331,14 +372,19 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 	loff_t off;
 	uint32_t nr_allocs = 0;
 
+	// Protection obligatoire contre les accès concurrents sur le même inode
+    inode_lock(inode);
+
 	if (file->f_flags & O_APPEND)
 		*offset = inode->i_size;
 
 	off = *offset;
 
-	/* Check if the write can be completed (enough space?) */
-	if (off + len > OUICHEFS_MAX_FILESIZE)
+	// Check if the write can be completed (enough space?) 
+	if (off + len > OUICHEFS_MAX_FILESIZE) {
+		inode_unlock(inode);
 		return -ENOSPC;
+	}
 
 	nr_allocs = max((loff_t)(off + len),(loff_t)inode->i_size) / OUICHEFS_BLOCK_SIZE;
 
@@ -347,13 +393,16 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 	else
 		nr_allocs = 0;
 
-	if (nr_allocs > sbi->nr_free_blocks)
+	if (nr_allocs > sbi->nr_free_blocks) {
+		inode_unlock(inode);
 		return -ENOSPC;
+	}
 
-	/* Read index block from disk */
+	// Read index block from disk 
 	bh_index = sb_bread(sb, ci->index_block);
 	if (!bh_index){
 		pr_err("Failed to read inode block %d\n", ci->index_block);
+		inode_unlock(inode);
 		return -EIO;
 	}
 	index = (struct ouichefs_file_index_block *)bh_index->b_data;
@@ -368,7 +417,8 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 		if (to_write < to_copy)
 			to_copy = to_write;
 
-		block = le32_to_cpu(index->blocks[iblock]);
+		//block = le32_to_cpu(index->blocks[iblock]);
+		block = index->blocks[iblock].start;
 
 		if (block == 0) {
 			struct buffer_head bh_tmp = {0};
@@ -390,7 +440,7 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 
 			// Nettoyage du buffer récupéré
 			memset(bh_data->b_data, 0, OUICHEFS_BLOCK_SIZE);
-				
+			set_buffer_uptodate(bh_data);
 		} else {
 			bh_data = sb_bread(sb, block);
 
@@ -418,20 +468,27 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 
 	brelse(bh_index);
 
-	if (bytes_copied == 0 && write_error) 
+	if (bytes_copied == 0 && write_error) {
+		inode_unlock(inode);
 		return write_error;
+	}
+		
 
 	*offset += bytes_copied;
 
-	/* Update inode metadata */
+	// Update inode metadata 
 	inode->i_size = (*offset > inode->i_size) ? *offset : inode->i_size;
 	inode->i_blocks = (roundup(inode->i_size, OUICHEFS_BLOCK_SIZE) / OUICHEFS_BLOCK_SIZE) + 1;
 	inode->i_mtime = inode->i_ctime = current_time(inode);
 	mark_inode_dirty(inode);
 
+	inode_unlock(inode);
+
 	return bytes_copied;
 }
 
+
+/* 1.3.2 Debugging ioctl */
 #define OUICHEFS_IOC_GET_EXTENTS _IO('O', 1)
 
 long ouichefs_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
@@ -442,12 +499,11 @@ long ouichefs_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
 				struct super_block *sb = inode->i_sb;
 				struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 				struct ouichefs_file_index_block *index;
-				struct buffer_head *bh_index, *bh_data;
+				struct buffer_head *bh_index;
 				sector_t iblock;
-				int cpt = 0;
 				int nb_extents = 0;
 
-				/* Read index block from disk */
+				// Read index block from disk 
 				bh_index = sb_bread(sb, ci->index_block);
 				if (!bh_index){
 					pr_err("Failed to read inode block %d\n", ci->index_block);
@@ -455,19 +511,18 @@ long ouichefs_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
 				}
 				index = (struct ouichefs_file_index_block *)bh_index->b_data;			
 				
-				for (int i = 0; i < OUICHEFS_MAX_EXTENTS; i++) {
-					if (index->blocks[i].start == 0)
-						break;
-
+				for (int i = 0; index->blocks[i].count != 0; i++) 
 					nb_extents++;
-				}
 
 				pr_info("ouichefs: extents for inode %lu: %d extent(s)\n", inode->i_ino, nb_extents);
 
-				for (iblock = 0; index->blocks[iblock].start != 0; iblock++) {
+				for (iblock = 0; index->blocks[iblock].count != 0; iblock++) {
 					struct ouichefs_extent ext = index->blocks[iblock];
 
-					pr_info("	[%d] start=%d count=%d (blocks %d-%d)\n", cpt++, ext.start, ext.count, ext.start, ext.start + ext.count - 1);
+					if (ext.start == 0)
+						pr_info("	[%llu] HOLE count=%u\n", iblock, ext.count);
+					else
+						pr_info("	[%llu] start=%u count=%u (blocks %u-%u)\n", iblock, ext.start, ext.count, ext.start, ext.start + ext.count - 1);
 				}
 
 				brelse(bh_index);
@@ -482,6 +537,96 @@ long ouichefs_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
 	return 0;
 }
 
+/* 1.4 Updating the read function*/
+ssize_t ouichefs_read(struct file *file, char __user *buf, size_t len, loff_t *offset) {
+	struct inode* inode = file->f_inode;
+	struct super_block *sb = inode->i_sb;
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct ouichefs_file_index_block *index;
+	struct buffer_head *bh_index, *bh_data;
+	sector_t iblock;
+	u32 block;
+	ssize_t bytes_copied = 0;
+	int read_error = 0;
+	size_t to_read = len;
+	loff_t off = *offset;
+
+	if (off >= inode->i_size)
+        return 0; // Fin de fichier (EOF)
+
+	if (off + len > inode->i_size)
+		to_read = inode->i_size - off;
+
+	// Read index block from disk 
+	bh_index = sb_bread(sb, ci->index_block);
+	if (!bh_index){
+		pr_err("Failed to read inode block %d\n", ci->index_block);
+		return -EIO;
+	}
+	index = (struct ouichefs_file_index_block *)bh_index->b_data;
+	struct ouichefs_extent* extents = index->blocks;
+
+	// On calcul l'indice du premier bloc à lire
+	iblock = off / OUICHEFS_BLOCK_SIZE;
+	off = off % OUICHEFS_BLOCK_SIZE;
+
+	// On lit tant qu'on a des données à lire et qu'on a pas atteint le dernier block
+	for (; to_read > 0; iblock++) {
+		size_t to_copy = OUICHEFS_BLOCK_SIZE - off;
+
+		if (to_read < to_copy)
+			to_copy = to_read;
+
+		block = ouichefs_extent_get_block(extents, iblock);
+
+		// Gestion des "trous"
+		if (block == 0) {
+			size_t uncopied = clear_user(buf + bytes_copied, to_copy);
+				
+			to_read -= (to_copy - uncopied);
+			bytes_copied += (to_copy - uncopied);
+			off = 0;
+
+			if (uncopied) {
+				read_error = -EFAULT;
+				break;
+			}
+
+			continue;
+		}
+
+		bh_data = sb_bread(sb, block);
+
+		if (!bh_data) {
+			pr_err("Failed to read data block %u\n", block);
+			read_error = -EIO;
+			break;
+		}
+
+		size_t ret = (size_t)copy_to_user((buf + bytes_copied), (bh_data->b_data + off), to_copy);
+
+		to_read -= (to_copy - ret);
+		bytes_copied += (to_copy - ret);
+		off = 0;
+
+		brelse(bh_data);
+
+		if (ret) {
+			read_error = -EFAULT;
+			break;
+		}
+	}
+
+	brelse(bh_index);
+
+	if (bytes_copied == 0 && read_error)
+		return read_error;
+
+	*offset += bytes_copied;
+	
+	return bytes_copied;
+}
+
 const struct file_operations ouichefs_file_ops = {
 	.owner = THIS_MODULE,
 	.open = ouichefs_open,
@@ -489,7 +634,7 @@ const struct file_operations ouichefs_file_ops = {
 	//.read_iter = generic_file_read_iter,
 	//.write_iter = generic_file_write_iter,
 	.fsync = generic_file_fsync,
-	.read = ouichefs_read,	// Q 1.2
+	.read = ouichefs_read,	// Q 1.2 → Q 1.4
 	.write = ouichefs_write,	// Q 1.2
 	.unlocked_ioctl = ouichefs_ioctl,	// Q 1.3
 };

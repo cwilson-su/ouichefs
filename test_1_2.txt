@@ -23,7 +23,7 @@ head -c 10240 /dev/urandom | base64 -w 0 | sudo tee mnt/gros_fichier.txt > /dev/
 ls -l mnt/gros_fichier.txt
 cat mnt/gros_fichier.txt
 
-    Ce que tu vérifies : Est-ce que le fichier fait bien 10240 * 4/3 (15656) octets ? Est-ce que cat affiche tout le contenu sans s'arrêter brusquement au bout de 4096 octets ?
+    Ce que tu vérifies : Est-ce que le fichier fait bien 10240 * 4/3 (13656) octets ? Est-ce que cat affiche tout le contenu sans s'arrêter brusquement au bout de 4096 octets ?
 
 Test 3 : L'écrasement partiel (Le Read-Modify-Write)
 
