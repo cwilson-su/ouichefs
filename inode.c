@@ -356,32 +356,30 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	if (S_ISDIR(inode->i_mode))
 		goto scrub;
 
-	for (i = 0; i < inode->i_blocks - 1; i++) {
+	for (i = 0; i < OUICHEFS_MAX_EXTENTS - 1; i++) {
 		char * block;
 
-		uint32_t start = le32_to_cpu(file_block->blocks[i].start);
-		uint32_t count = le32_to_cpu(file_block->blocks[i].count);
+		uint32_t start = file_block->blocks[i].start;
+		uint32_t count = file_block->blocks[i].count;
 
-		if (file_block->blocks[i].count == 0) 
+		if (count == 0) 
 			goto scrub;
 
-		if (file_block->blocks[i].start == 0) 
-			continue;
+		if (start != 0) {
+			for (uint32_t j = 0; j < count; j++) {
+				uint32_t current_block = start + j;
 
-		for (uint32_t j = 0; j < count; j++) {
-			uint32_t current_block = start + j;
-
-			bh2 = sb_bread(sb, current_block);	
-			if (!bh2)
-				goto put_block;
-			block = (char *)bh2->b_data;
-			memset(block, 0, OUICHEFS_BLOCK_SIZE);
-			mark_buffer_dirty(bh2);
-			brelse(bh2);
+				bh2 = sb_bread(sb, current_block);	
+				if (!bh2)
+					goto put_block;
+				block = (char *)bh2->b_data;
+				memset(block, 0, OUICHEFS_BLOCK_SIZE);
+				mark_buffer_dirty(bh2);
+				brelse(bh2);
 put_block:
-			put_block(sbi, current_block);
+				put_block(sbi, current_block);
+			}
 		}
-			
 	}
 	/*for (i = 0; i < inode->i_blocks - 1; i++) {
 		char *block;

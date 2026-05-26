@@ -20,7 +20,7 @@ rmmod ouichefs
 
 ### 1.2
 
-voir file.c
+voir file.c + test_1_2.txt
 
 ouichefs_read → Test validé
 
@@ -38,6 +38,9 @@ voir file.c
 
 ouichefs_ioctl → Test validé
 
+test_ioctl.c (ajout)
+gcc -o test_ioctl test_ioctl.c
+
 ### 1.4
 
 voir file.c
@@ -49,3 +52,15 @@ ouichefs_extent_get_block → Test validé
 voir inode.c
 
 ouichefs_unlink (modifié)
+
+### 1.5
+
+voir file.c + test_1_5_3.txt
+
+ouichefs_write (modifié) → Test validé
+
+ouichefs_file_get_block (modifié) → Test validé
+
+voir inode.c
+
+ouichefs_unlink (Déjà modifié dans 1.4) 

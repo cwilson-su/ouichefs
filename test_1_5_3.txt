@@ -1,0 +1,47 @@
+🛠️ Étape 1 : Créer le fichier de test (> 4 Mo)
+
+Une fois ton module rechargé et ton image formatée/montée, utilise dd pour générer un fichier de 4,2 Mo (par exemple) rempli de données textuelles ou de zéros directement dans ton point de montage.
+Bash
+
+# Crée un fichier de 4.2 Mo (1050 blocs de 4 Ko)
+dd if=/dev/zero of=mnt/bigfile.txt bs=4k count=1050
+
+    Le noyau va appeler ta fonction ouichefs_write. Grâce à notre nettoyage, elle va intercepter l'écriture globale bloc par bloc et remplir ton index d'extents.
+
+🛠️ Étape 2 : Vérifier la cohérence de la lecture
+
+L'énoncé stipule que le fichier doit pouvoir être lu à nouveau correctement. Vérifie que le fichier virtuel a la bonne taille et que tu peux le lire sans erreur EIO ou EINVAL :
+Bash
+
+# Vérifie la taille avec ls
+ls -lh mnt/bigfile.txt
+
+# Force une lecture complète (via ton ouichefs_read) vers nulle part pour valider la stabilité
+cat mnt/bigfile.txt > /dev/null
+
+🛠️ Étape 3 : Exécuter l'ioctl de vérification
+
+C'est le moment d'utiliser ton binaire test_ioctl compilé à la section 1.3 pour inspecter ce que ton module a réellement écrit dans le bloc d'index :
+Bash
+
+./test_ioctl mnt/bigfile.txt
+
+📊 Ce que tu devrais observer (Analyse du résultat) :
+
+Regarde bien les logs de ton ioctl (ou tes pr_info associés dans dmesg) :
+
+    Le cas fragmenté (Attendu à ce stade) : Si ton allocateur de blocs actuel te donne des blocs éparpillés (ex: le bloc 204, puis le bloc 208, puis le bloc 210), tu vas voir une liste d'extents du style :
+
+        Extent 0: start=204, count=1
+
+        Extent 1: start=208, count=1
+
+        Extent 2: start=210, count=1
+
+        Ici, ton nombre d'extents utilisés sera élevé (proche de 1050 si aucun bloc n'était contigu).
+
+    Le cas contigu (Par chance) : Si par chance la bitmap du disque était totalement vide et linéaire, ton allocateur a pu te donner des blocs qui se suivent (ex: 204, 205, 206, 207...). Ta logique de contiguïté (last->start + last->count == bno) aura alors fonctionné, et tu verras un unique (ou très peu) d'extent massif :
+
+        Extent 0: start=204, count=1050
+
+Fais le test ! Si ton fichier de 4 Mo est créé sans erreur, que le cat ne plante pas et que ton test_ioctl t'affiche enfin la structure de tes extents sur le disque, tu as officiellement validé la section 1.5 !
