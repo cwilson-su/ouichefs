@@ -69,3 +69,10 @@ ouichefs_unlink (Déjà modifié dans 1.4)
 
 1.6.1 - voir bitmap.h a la fin completement pour ouichefs_alloc_contiguous. La fonction helper 'get_contiguous_free_bits' a ete faite pour simplifier un peu la lecture.
 
+1.6.2 - voir file.c vers la fin. Branchement if de ouichefs_write modifie.
+
+Il faut quand meme faire le test "Verify that writing a large file now produces significantly fewer extents than before, and measure the
+maximum file size achievable on a given partition." svp
+
+### 1.7
+
