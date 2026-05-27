@@ -1,7 +1,7 @@
 obj-m += ouichefs.o
 ouichefs-objs := fs.o super.o inode.o file.o dir.o
 
-KERNELDIR ?= "/home/max/M1/PNL/TME2/linux-6.5.7"
+KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 
 all:
 	make -C $(KERNELDIR) M=$(PWD) modules

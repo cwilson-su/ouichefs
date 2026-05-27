@@ -56,6 +56,68 @@ static uint32_t ouichefs_extent_get_block(
 	return physical_block;
 }
 
+/* 1.6.1 Implementation */
+/*static uint32_t ouichefs_alloc_contiguous(struct super_block *sb, uint32_t requested, uint32_t *block)
+{
+	struct ouichefs_sb_info* sbi = OUICHEFS_SB(sb);
+	uint32_t total_blocks = sbi->nr_blocks;
+    uint32_t best_start = 0;
+    uint32_t best_count = 0;
+    uint32_t current_start = 0;
+    uint32_t current_count = 0;
+	uint32_t first_free_bit;
+    bool in_free_run = false;
+
+	if (requested == 0)
+		return 0;
+
+	first_free_bit = find_first_bit(sbi->bfree_bitmap, total_blocks);
+
+	// Si aucun block libre on renvoie 0
+	if (first_free_bit == total_blocks)
+		return 0;
+
+	for (uint32_t b = first_free_bit; b < total_blocks; b++) {
+
+		bool is_free = test_bit(b, sbi->bfree_bitmap);
+		
+		if (is_free) {
+			if (!in_free_run) {
+				current_start = b;
+				current_count = 1;
+				in_free_run = true;
+			} else {
+				if (current_count++ == requested) {
+					best_start = current_start;
+					best_count = current_count;
+					goto allocation;
+				}
+			}
+		} else {
+			if (in_free_run) {
+				in_free_run = false;
+
+				if (current_count > best_count) {
+					best_start = current_start;
+					best_count = current_count;
+				}
+			}
+		}
+	}
+
+allocation:
+	if (best_count > 0) {
+		*block = best_start;
+
+		for (uint32_t b = best_start; b < best_start + best_count; b++) 
+			bitmap_clear(sbi->bfree_bitmap, b, 1);
+		
+		sbi->nr_free_blocks -= best_count;
+	}
+
+	return best_count;
+}*/
+
 /*
  * Map the buffer_head passed in argument with the iblock-th block of the file
  * represented by inode. If the requested block is not allocated and create is
@@ -188,6 +250,83 @@ static uint32_t ouichefs_extent_get_block(
 //
 //	return ret;
 //}
+
+/* 1.6.2 Integration */
+static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
+				   struct buffer_head *bh_result, int create, uint32_t* requested)
+{
+	struct super_block *sb = inode->i_sb;
+	//struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct ouichefs_file_index_block *index;
+	struct buffer_head *bh_index;
+	int ret = 0;
+	uint32_t bno;
+	uint32_t allocated_bloc;
+	sector_t current_extent_id;
+	sector_t last_extent_id = 0;
+
+	/* Read index block from disk */
+	bh_index = sb_bread(sb, ci->index_block);
+	if (!bh_index)
+		return -EIO;
+	index = (struct ouichefs_file_index_block *)bh_index->b_data;
+
+	/*
+	 * Check if logical_block is already allocated. If not and create is true,
+	 * allocate it. Else, get the physical block number.
+	 */
+
+	bno = ouichefs_extent_get_block(index->blocks, logical_block, &current_extent_id);
+
+	if (bno == 0) {
+		if (!create) {
+			ret = 0;
+			goto brelse_index;
+		}
+		allocated_bloc = ouichefs_alloc_contiguous(sb, *requested, &bno);
+		if (!allocated_bloc) {
+			ret = -ENOSPC;
+			goto brelse_index;
+		}
+		*requested -= allocated_bloc;
+
+		if (current_extent_id > 0)
+			last_extent_id = current_extent_id - 1;
+
+		// Si le bloc récupéré est contigue au dernier extents count + 1
+		if (bno == index->blocks[last_extent_id].start + index->blocks[last_extent_id].count) {
+			index->blocks[last_extent_id].count += allocated_bloc;
+		} else {
+			if (current_extent_id == OUICHEFS_MAX_EXTENTS) {
+				ret = -ENOSPC;
+				goto brelse_index;
+			}
+
+			// Si on est dans un trou
+			/*if (index->blocks[current_extent_id].count != 0) {
+		
+
+			} else {
+				index->blocks[current_extent_id].start = bno;
+				index->blocks[current_extent_id].count = 1;
+			}*/
+			// !!! On ne gère pas encore les trous
+			index->blocks[current_extent_id].start = bno;
+			index->blocks[current_extent_id].count = allocated_bloc;
+		}
+		
+		mark_buffer_dirty(bh_index);
+	} 
+
+	/* Map the physical block to the given buffer_head */
+	map_bh(bh_result, sb, bno);
+
+brelse_index:
+	brelse(bh_index);
+
+	return ret;
+}
 
 /*
  * Called by the page cache to read a page from the physical disk and map it in
@@ -713,8 +852,7 @@ ssize_t ouichefs_read(struct file *file, char __user *buf, size_t len, loff_t *o
 }
 
 /* 1.5 Updating write fonction */
-ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, loff_t* offset) 
-{
+ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, loff_t* offset) {
 	struct inode* inode = file->f_inode;
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
@@ -772,9 +910,9 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 
 		block = ouichefs_extent_get_block(extents, iblock, NULL); 
 
-		/*if (block == 0) {
+		if (block == 0) {
 			struct buffer_head bh_tmp = {0};
-			write_error = ouichefs_file_get_block(inode, iblock, &bh_tmp, 1); // On alloue le bloc
+			write_error = ouichefs_file_get_block(inode, iblock, &bh_tmp, 1, &nr_allocs); // On alloue le bloc (1.6.2 rajout de nr_allocs)
 			if (write_error){
 				pr_err("Failed to allocate new data block\n");
 				break;
@@ -793,71 +931,6 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 			// Nettoyage du buffer récupéré
 			memset(bh_data->b_data, 0, OUICHEFS_BLOCK_SIZE);
 			set_buffer_uptodate(bh_data);
-		*/
-		/* -------1.6.2 ----------*/
-		if (block == 0) {
-            uint32_t start_bno = 0;
-            uint32_t allocated_count = 0;
-            int last_ext_idx = -1;
-            int i;
-            
-            // calculate how many blocks we need for the REST of this write
-            uint32_t blocks_needed = (to_write + off + OUICHEFS_BLOCK_SIZE - 1) / OUICHEFS_BLOCK_SIZE;
-
-            // allocate them ALL AT ONCE using new function from 1.6.1 in bitmap.h
-            allocated_count = ouichefs_alloc_contiguous(sb, blocks_needed, &start_bno);
-            if (allocated_count == 0) {
-                pr_err("Failed to allocate contiguous blocks\n");
-                write_error = -ENOSPC;
-                break;
-            }
-
-            // --->EXTENT MERGING:
-            // find the last valid extent in the array
-            for (i = 0; i < OUICHEFS_MAX_EXTENTS; i++) {
-                if (le32_to_cpu(extents[i].count) == 0) break;
-                last_ext_idx = i;
-            }
-
-            // check if it's perfectly contiguous with the last extent
-            if (last_ext_idx >= 0 && 
-                (le32_to_cpu(extents[last_ext_idx].start) + 
-                 le32_to_cpu(extents[last_ext_idx].count)) == start_bno) {
-                
-                // MERGE! Just increment the count
-                uint32_t old_count = le32_to_cpu(extents[last_ext_idx].count);
-                extents[last_ext_idx].count = cpu_to_le32(old_count + allocated_count);
-            } else {
-                // NOT CONTIGUOUS. Create a new slot
-                int new_ext_idx = last_ext_idx + 1;
-                if (new_ext_idx >= OUICHEFS_MAX_EXTENTS) {
-                    pr_err("Out of extent slots!\n");
-                    write_error = -ENOSPC;
-                    break;
-                }
-                extents[new_ext_idx].start = cpu_to_le32(start_bno);
-                extents[new_ext_idx].count = cpu_to_le32(allocated_count);
-            }
-
-            // tell kernel to save the updated array to disk
-            mark_buffer_dirty(bh_index);
-            sync_dirty_buffer(bh_index);
-
-            // set the block for THIS loop iteration to the first newly allocated block
-            block = start_bno;
-
-            // get the buffer without reading from disk (since it's brand new)
-            bh_data = sb_getblk(sb, block);
-
-            if (!bh_data) {
-                pr_err("Failed to get data block %u\n", block);
-                write_error = -EIO;
-                break;
-            }
-
-            // Nettoyage du buffer récupéré
-            memset(bh_data->b_data, 0, OUICHEFS_BLOCK_SIZE);
-            set_buffer_uptodate(bh_data);
 		} else {
 			bh_data = sb_bread(sb, block);
 
@@ -896,7 +969,6 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 	// Update inode metadata (A revoir)
 	inode->i_size = (*offset > inode->i_size) ? *offset : inode->i_size;
 	inode->i_blocks = (roundup(inode->i_size, OUICHEFS_BLOCK_SIZE) / OUICHEFS_BLOCK_SIZE) + 1;
-
 	inode->i_mtime = inode->i_ctime = current_time(inode);
 	mark_inode_dirty(inode);
 

@@ -2,8 +2,7 @@
 echo "----- Lets test OuicheFS Allocator for Q1.6.2 ----"
 
 # ensure we are in the right directory and everything is built
-make
-gcc tets_ioctl.c -o test_extents
+gcc -o test_extents tets_ioctl.c
 
 # reload the kernel module cleanly
 umount /mnt/ouiche 2>/dev/null
@@ -12,8 +11,9 @@ insmod ouichefs.ko
 
 # format & mount a fresh 20MB dummy drive
 echo "Formatting drive..."
-dd if=/dev/zero of=image.img bs=1M count=20 status=none
-./mkfs/mkfs.ouichefs image.img > /dev/null
+make mrproper
+make
+make img
 mkdir -p /mnt/ouiche
 mount -o loop -t ouichefs image.img /mnt/ouiche
 

@@ -27,8 +27,6 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    printf("Vérification : dmesg | tail -n 20\n");
-
     close(fd);
     return EXIT_SUCCESS;
 }
