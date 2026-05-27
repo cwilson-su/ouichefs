@@ -52,9 +52,14 @@ struct ouichefs_inode {
 	__le32 index_block; /* Block with list of blocks for this file */
 };
 
+/* module param */
+extern uint32_t reservation_size;
+
 struct ouichefs_inode_info {
 	uint32_t index_block;
-	struct inode vfs_inode;
+	uint32_t i_reserved_start;	/* first pre-reserved block */
+	uint32_t i_reserved_count;	/* number of pre-reserved blocks left */
+	struct inode vfs_inode;	
 };
 
 #define OUICHEFS_INODES_PER_BLOCK \
@@ -75,8 +80,11 @@ struct ouichefs_sb_info {
 
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
+
+	uint32_t gc_runs; /* Number of Garbage collector call */ // Q 1.7.4
 };
 
+/* 1.3.1 Data structures */
 struct ouichefs_extent {
 	uint32_t start; /* first physical block number of the run */
 	uint32_t count; /* number of consecutive blocks in the run */
@@ -84,9 +92,9 @@ struct ouichefs_extent {
 
 #define OUICHEFS_MAX_EXTENTS (OUICHEFS_BLOCK_SIZE / sizeof(struct ouichefs_extent))
 
-//struct ouichefs_file_index_block {
-//	__le32 blocks[OUICHEFS_BLOCK_SIZE >> 2];
-//};
+/*struct ouichefs_file_index_block {
+	__le32 blocks[OUICHEFS_BLOCK_SIZE >> 2];
+};*/
 
 struct ouichefs_file_index_block {
 	struct ouichefs_extent blocks[OUICHEFS_MAX_EXTENTS];

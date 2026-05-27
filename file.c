@@ -251,20 +251,65 @@ allocation:
 //	return ret;
 //}
 
+/* 1.7.4 Garbage collector */
+static void ouichefs_garbage_collector(struct super_block* sb)
+{
+	struct ouichefs_sb_info* sbi = OUICHEFS_SB(sb);
+	struct inode* inode;
+
+	sbi->gc_runs++;
+
+	spin_lock(&sb->s_inode_list_lock);
+
+	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
+		
+		struct ouichefs_inode_info* ci = OUICHEFS_INODE(inode);
+
+		if (spin_trylock(&inode->i_lock)) {
+			uint32_t count = ci->i_reserved_count;
+			uint32_t start = ci->i_reserved_start;
+
+			// On remet immédiatement à zéro en mémoire sous verrou
+			ci->i_reserved_start = 0;
+			ci->i_reserved_count = 0;
+
+			spin_unlock(&inode->i_lock);
+
+			/* * Maintenant qu'on a relâché le verrou de l'inode et qu'on possède
+				* les variables locales, on peut libérer les blocs dans la bitmap.
+				* Note : Si put_block utilise un mutex interne, il est préférable
+				* de relâcher aussi s_inode_list_lock, mais pour un petit FS de TP,
+				* purger directement ici est souvent toléré si put_block est ultra-rapide.
+				*/
+			for (uint32_t i = 0; i < count; i++) {
+				put_block(sbi, start + i);
+			}
+		}
+	}
+
+	spin_unlock(&sb->s_inode_list_lock);
+	pr_info("ouichefs: GC pass completed (Total runs: %u)\n", sbi->gc_runs);
+}
+
 /* 1.6.2 Integration */
 static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
 				   struct buffer_head *bh_result, int create, uint32_t* requested)
 {
 	struct super_block *sb = inode->i_sb;
-	//struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct ouichefs_file_index_block *index;
 	struct buffer_head *bh_index;
 	int ret = 0;
 	uint32_t bno;
-	uint32_t allocated_bloc;
+	uint32_t allocated_block;
+	uint32_t to_request = reservation_size;
 	sector_t current_extent_id;
 	sector_t last_extent_id = 0;
+	bool in_window = true;
+	uint32_t new_window;
+
+	if (*requested == 0) 
+		return 0;
 
 	/* Read index block from disk */
 	bh_index = sb_bread(sb, ci->index_block);
@@ -284,19 +329,56 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
 			ret = 0;
 			goto brelse_index;
 		}
-		allocated_bloc = ouichefs_alloc_contiguous(sb, *requested, &bno);
-		if (!allocated_bloc) {
-			ret = -ENOSPC;
-			goto brelse_index;
-		}
-		*requested -= allocated_bloc;
 
 		if (current_extent_id > 0)
 			last_extent_id = current_extent_id - 1;
 
+		if (ci->i_reserved_count) {
+			if (*requested > ci->i_reserved_count) {
+				bno = ci->i_reserved_start;
+				index->blocks[last_extent_id].count += ci->i_reserved_count;
+				*requested -= ci->i_reserved_count;
+				ci->i_reserved_start += ci->i_reserved_count;
+				ci->i_reserved_count = 0;	
+			} else {
+				index->blocks[last_extent_id].count += *requested;
+				ci->i_reserved_start += *requested;
+				ci->i_reserved_count -= *requested;
+				*requested = 0;
+			}
+
+			goto dirty_index;
+		}
+
+		if (to_request < *requested) {
+			in_window = false;
+			to_request = *requested;
+		}
+			
+		allocated_block = ouichefs_alloc_contiguous(sb, to_request, &bno);
+		if (!allocated_block) {
+			ouichefs_garbage_collector(sb);
+			allocated_block = ouichefs_alloc_contiguous(sb, to_request, &bno);
+			if (!allocated_block) {
+				ret = -ENOSPC;
+				goto brelse_index;
+			}
+		}
+
+		if (allocated_block < *requested) {
+			new_window = 0;
+			*requested -= allocated_block;
+		} else { 
+			new_window = allocated_block - *requested;
+			*requested = 0;
+		}
+
+		ci->i_reserved_start = bno + allocated_block - new_window;
+		ci->i_reserved_count = new_window;
+
 		// Si le bloc récupéré est contigue au dernier extents count + 1
 		if (bno == index->blocks[last_extent_id].start + index->blocks[last_extent_id].count) {
-			index->blocks[last_extent_id].count += allocated_bloc;
+			index->blocks[last_extent_id].count += allocated_block - new_window;
 		} else {
 			if (current_extent_id == OUICHEFS_MAX_EXTENTS) {
 				ret = -ENOSPC;
@@ -313,9 +395,9 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
 			}*/
 			// !!! On ne gère pas encore les trous
 			index->blocks[current_extent_id].start = bno;
-			index->blocks[current_extent_id].count = allocated_bloc;
+			index->blocks[current_extent_id].count = allocated_block - new_window;
 		}
-		
+dirty_index:
 		mark_buffer_dirty(bh_index);
 	} 
 
@@ -977,6 +1059,28 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 	return bytes_copied;
 }
 
+/* 1.7.3 Releasing unused reservations */
+static int ouichefs_release(struct inode *inode, struct file *file)
+{
+    struct ouichefs_sb_info *sbi = OUICHEFS_SB(inode->i_sb);
+    struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+
+    // Si le fichier possède encore des blocs pré-réservés en mémoire
+    if (ci->i_reserved_count > 0) {
+
+        // On libère les blocs un par un dans la bitmap
+        for (uint32_t i = 0; i < ci->i_reserved_count; i++) {
+            put_block(sbi, ci->i_reserved_start + i);
+        }
+
+        // On remet la fenêtre à zéro
+        ci->i_reserved_start = 0;
+        ci->i_reserved_count = 0;
+    }
+
+    return 0;
+}
+
 const struct file_operations ouichefs_file_ops = {
 	.owner = THIS_MODULE,
 	.open = ouichefs_open,
@@ -987,4 +1091,5 @@ const struct file_operations ouichefs_file_ops = {
 	.read = ouichefs_read,	// Q 1.2 → Q 1.4
 	.write = ouichefs_write,	// Q 1.2 → Q 1.5
 	.unlocked_ioctl = ouichefs_ioctl,	// Q 1.3
+	.release = ouichefs_release,	// Q 1.7.3
 };

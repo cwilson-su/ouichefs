@@ -41,6 +41,10 @@ static struct inode *ouichefs_alloc_inode(struct super_block *sb)
 	ci = kmem_cache_alloc(ouichefs_inode_cache, GFP_KERNEL);
 	if (!ci)
 		return NULL;
+
+	ci->i_reserved_start = 0;
+	ci->i_reserved_count = 0;
+	
 	inode_init_once(&ci->vfs_inode);
 	return &ci->vfs_inode;
 }

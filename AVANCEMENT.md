@@ -67,12 +67,35 @@ ouichefs_unlink (Déjà modifié dans 1.4)
 
 ### 1.6
 
-1.6.1 - voir bitmap.h a la fin completement pour ouichefs_alloc_contiguous. La fonction helper 'get_contiguous_free_bits' a ete faite pour simplifier un peu la lecture.
+voir Bitmap.h
 
-1.6.2 - voir file.c vers la fin. Branchement if de ouichefs_write modifie.
+ouichefs_alloc_contiguous → Test validé
 
-Il faut quand meme faire le test "Verify that writing a large file now produces significantly fewer extents than before, and measure the
-maximum file size achievable on a given partition." svp
+voir file.c
 
+ouichefs_file_get_block (modifié) → Test validé
+
+Maximum file size achievable on a given partition :
 ### 1.7
 
+voir ouichefs.h 
+
+ouichefs_inode_info (modifié) → A Tester
+
+ouichefs_sb_info (modifié) → A Tester
+
+voir super.c
+
+ouichefs_alloc_inode (modifié) → A Tester
+
+voir fs.c
+
+reservation_size → A Tester
+
+voir inode.c 
+
+ouichefs_unlink (modifié) → A Tester
+
+voir file.c
+
+ouichefs_garbage_collector → A Tester

@@ -13,6 +13,10 @@
 
 #include "ouichefs.h"
 
+/* 1.7.1 In-memory reservation state */
+uint32_t reservation_size = 8; // Sans static pour que les autres fichier puissent la lire
+module_param(reservation_size, uint, 0644);
+
 /*
  * Mount a ouiche_fs partition
  */

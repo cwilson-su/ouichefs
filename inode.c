@@ -343,6 +343,16 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 		inode_dec_link_count(dir);
 	mark_inode_dirty(dir);
 
+	struct ouichefs_inode_info* ci = OUICHEFS_INODE(inode);
+
+	if (ci->i_reserved_count) {
+		for (uint32_t j = 0; j < ci->i_reserved_count; j++) {
+            put_block(sbi, ci->i_reserved_start + j);
+        }
+        ci->i_reserved_start = 0;
+        ci->i_reserved_count = 0;
+	}
+
 	/*
 	 * Cleanup pointed blocks if unlinking a file. If we fail to read the
 	 * index block, cleanup inode anyway and lose this file's blocks
