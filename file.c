@@ -116,78 +116,78 @@ static uint32_t ouichefs_extent_get_block(
 //}
 
 /* 1.5.1 Extent-aware block allocation */
-static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
-				   struct buffer_head *bh_result, int create)
-{
-	struct super_block *sb = inode->i_sb;
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-	struct ouichefs_file_index_block *index;
-	struct buffer_head *bh_index;
-	int ret = 0, bno;
-	sector_t current_extent_id;
-	sector_t last_extent_id = 0;
-
-	/* Read index block from disk */
-	bh_index = sb_bread(sb, ci->index_block);
-	if (!bh_index)
-		return -EIO;
-	index = (struct ouichefs_file_index_block *)bh_index->b_data;
-
-	/*
-	 * Check if logical_block is already allocated. If not and create is true,
-	 * allocate it. Else, get the physical block number.
-	 */
-
-	bno = ouichefs_extent_get_block(index->blocks, logical_block, &current_extent_id);
-
-	if (bno == 0) {
-		if (!create) {
-			ret = 0;
-			goto brelse_index;
-		}
-		bno = get_free_block(sbi);
-		if (!bno) {
-			ret = -ENOSPC;
-			goto brelse_index;
-		}
-
-		if (current_extent_id > 0)
-			last_extent_id = current_extent_id - 1;
-
-		// Si le bloc récupéré est contigue au dernier extents count + 1
-		if (bno == index->blocks[last_extent_id].start + index->blocks[last_extent_id].count) {
-			index->blocks[last_extent_id].count += 1;
-		} else {
-			if (current_extent_id == OUICHEFS_MAX_EXTENTS) {
-				ret = -ENOSPC;
-				goto brelse_index;
-			}
-
-			// Si on est dans un trou
-			/*if (index->blocks[current_extent_id].count != 0) {
-		
-
-			} else {
-				index->blocks[current_extent_id].start = bno;
-				index->blocks[current_extent_id].count = 1;
-			}*/
-			// !!! On ne gère pas encore les trous
-			index->blocks[current_extent_id].start = bno;
-			index->blocks[current_extent_id].count = 1;
-		}
-		
-		mark_buffer_dirty(bh_index);
-	} 
-
-	/* Map the physical block to the given buffer_head */
-	map_bh(bh_result, sb, bno);
-
-brelse_index:
-	brelse(bh_index);
-
-	return ret;
-}
+//static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
+//				   struct buffer_head *bh_result, int create)
+//{
+//	struct super_block *sb = inode->i_sb;
+//	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+//	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+//	struct ouichefs_file_index_block *index;
+//	struct buffer_head *bh_index;
+//	int ret = 0, bno;
+//	sector_t current_extent_id;
+//	sector_t last_extent_id = 0;
+//
+//	/* Read index block from disk */
+//	bh_index = sb_bread(sb, ci->index_block);
+//	if (!bh_index)
+//		return -EIO;
+//	index = (struct ouichefs_file_index_block *)bh_index->b_data;
+//
+//	/*
+//	 * Check if logical_block is already allocated. If not and create is true,
+//	 * allocate it. Else, get the physical block number.
+//	 */
+//
+//	bno = ouichefs_extent_get_block(index->blocks, logical_block, &current_extent_id);
+//
+//	if (bno == 0) {
+//		if (!create) {
+//			ret = 0;
+//			goto brelse_index;
+//		}
+//		bno = get_free_block(sbi);
+//		if (!bno) {
+//			ret = -ENOSPC;
+//			goto brelse_index;
+//		}
+//
+//		if (current_extent_id > 0)
+//			last_extent_id = current_extent_id - 1;
+//
+//		// Si le bloc récupéré est contigue au dernier extents count + 1
+//		if (bno == index->blocks[last_extent_id].start + index->blocks[last_extent_id].count) {
+//			index->blocks[last_extent_id].count += 1;
+//		} else {
+//			if (current_extent_id == OUICHEFS_MAX_EXTENTS) {
+//				ret = -ENOSPC;
+//				goto brelse_index;
+//			}
+//
+//			// Si on est dans un trou
+//			/*if (index->blocks[current_extent_id].count != 0) {
+//		
+//
+//			} else {
+//				index->blocks[current_extent_id].start = bno;
+//				index->blocks[current_extent_id].count = 1;
+//			}*/
+//			// !!! On ne gère pas encore les trous
+//			index->blocks[current_extent_id].start = bno;
+//			index->blocks[current_extent_id].count = 1;
+//		}
+//		
+//		mark_buffer_dirty(bh_index);
+//	} 
+//
+//	/* Map the physical block to the given buffer_head */
+//	map_bh(bh_result, sb, bno);
+//
+//brelse_index:
+//	brelse(bh_index);
+//
+//	return ret;
+//}
 
 /*
  * Called by the page cache to read a page from the physical disk and map it in

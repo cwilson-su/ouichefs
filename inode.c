@@ -76,7 +76,7 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 		inode->i_fop = &ouichefs_dir_ops;
 	} else if (S_ISREG(inode->i_mode)) {
 		inode->i_fop = &ouichefs_file_ops;
-		inode->i_mapping->a_ops = &ouichefs_aops;
+		//inode->i_mapping->a_ops = &ouichefs_aops;
 	}
 
 	brelse(bh);
@@ -189,7 +189,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	} else if (S_ISREG(mode)) {
 		inode->i_size = 0;
 		inode->i_fop = &ouichefs_file_ops;
-		inode->i_mapping->a_ops = &ouichefs_aops;
+		//inode->i_mapping->a_ops = &ouichefs_aops;
 	}
 	set_nlink(inode, 1);
 
