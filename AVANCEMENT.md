@@ -64,3 +64,8 @@ ouichefs_file_get_block (modifié) → Test validé
 voir inode.c
 
 ouichefs_unlink (Déjà modifié dans 1.4) 
+
+### 1.6
+
+1.6.1 - voir bitmap.h a la fin completement pour ouichefs_alloc_contiguous. La fonction helper 'get_contiguous_free_bits' a ete faite pour simplifier un peu la lecture.
+
