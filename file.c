@@ -555,12 +555,23 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 			return -EIO;
 		index = (struct ouichefs_file_index_block *)bh_index->b_data;
 
+		/*
 		for (iblock = 0; index->blocks[iblock].count != 0; iblock++) {
 			//put_block(sbi, le32_to_cpu(index->blocks[iblock]));
 			//index->blocks[iblock] = 0;
 			put_block(sbi, index->blocks[iblock].start);
 			index->blocks[iblock] = (struct ouichefs_extent){0, 0};
 		}
+		*/
+
+		for (iblock = 0; index->blocks[iblock].count != 0; iblock++) {
+			// Q1.9 FIX: Do not free physical block 0 (it's a hole!) 
+			if (index->blocks[iblock].start != 0) {
+				put_block(sbi, index->blocks[iblock].start);
+			}
+			index->blocks[iblock] = (struct ouichefs_extent){0, 0};
+		}
+		
 		inode->i_size = 0;
 		inode->i_blocks = 1;
 
@@ -981,6 +992,44 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 	}
 	index = (struct ouichefs_file_index_block *)bh_index->b_data;
 	struct ouichefs_extent* extents = index->blocks;
+
+	// -----------------> Q1.9: SPARSE FILE HOLE INJECTION LOGIC
+	uint32_t old_blocks = (inode->i_size + OUICHEFS_BLOCK_SIZE - 1) / OUICHEFS_BLOCK_SIZE;
+	uint32_t new_start_block = off / OUICHEFS_BLOCK_SIZE;
+
+	// Did the user seek past the end of the file, creating a gap?
+	if (new_start_block > old_blocks) {
+		uint32_t hole_blocks = new_start_block - old_blocks;
+		int i, last_ext_idx = -1;
+
+		// find the last valid extent in the array 
+		for (i = 0; i < OUICHEFS_MAX_EXTENTS; i++) {
+			if (extents[i].count == 0) break;
+			last_ext_idx = i;
+		}
+
+		// ceck if the last extent is ALSO a hole, so we can merge them!
+		if (last_ext_idx >= 0 && extents[last_ext_idx].start == 0) {
+			extents[last_ext_idx].count += hole_blocks;
+		} else {
+			// create a brand new hole extent slot
+			int new_ext_idx = last_ext_idx + 1;
+			if (new_ext_idx < OUICHEFS_MAX_EXTENTS) {
+				extents[new_ext_idx].start = 0; /* 0 means HOLE */
+				extents[new_ext_idx].count = hole_blocks;
+			} else {
+				pr_err("ouichefs: Out of extent slots while injecting hole!\n");
+				brelse(bh_index);
+				inode_unlock(inode);
+				return -ENOSPC;
+			}
+		}
+		
+		// save the injected hole to disk before we start writing real data
+		mark_buffer_dirty(bh_index);
+		sync_dirty_buffer(bh_index);
+	}
+	/* ----------------------------------*/
 
 	// On calcul l'indice du premier bloc à écrire
 	iblock = off / OUICHEFS_BLOCK_SIZE;
