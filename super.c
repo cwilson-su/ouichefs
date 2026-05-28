@@ -57,7 +57,9 @@ static uint32_t ouichefs_count_reserved_blocks(struct super_block *sb)
 
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
 		struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+		spin_lock(&inode->i_lock);
 		reserved += ci->i_reserved_count;
+		spin_unlock(&inode->i_lock);
 	}
 
 	spin_unlock(&sb->s_inode_list_lock);
@@ -74,10 +76,12 @@ static void ouichefs_compute_stats(struct super_block *sb,
 
 	memset(stats, 0, sizeof(*stats));
 
+	spin_lock(&sbi->bitmap_lock);
 	stats->free_blocks = sbi->nr_free_blocks;
 	stats->reserved_blocks = ouichefs_count_reserved_blocks(sb);
 	stats->reservation_size_value = reservation_size;
 	stats->gc_runs = sbi->gc_runs;
+	spin_unlock(&sbi->bitmap_lock);
 
 	for (ino = 0; ino < sbi->nr_inodes; ino++) {
 		struct buffer_head *bh_inode = NULL;
@@ -557,6 +561,7 @@ static int ouichefs_statfs(struct dentry *dentry, struct kstatfs *stat)
 	struct super_block *sb = dentry->d_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 
+	spin_lock(&sbi->bitmap_lock);
 	stat->f_type = OUICHEFS_MAGIC;
 	stat->f_bsize = OUICHEFS_BLOCK_SIZE;
 	stat->f_blocks = sbi->nr_blocks;
@@ -565,6 +570,7 @@ static int ouichefs_statfs(struct dentry *dentry, struct kstatfs *stat)
 	stat->f_files = sbi->nr_inodes;
 	stat->f_ffree = sbi->nr_free_inodes;
 	stat->f_namelen = OUICHEFS_FILENAME_LEN;
+	spin_unlock(&sbi->bitmap_lock);
 
 	return 0;
 }

@@ -344,13 +344,19 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	mark_inode_dirty(dir);
 
 	struct ouichefs_inode_info* ci = OUICHEFS_INODE(inode);
+	uint32_t start, count;
 
-	if (ci->i_reserved_count) {
-		for (uint32_t j = 0; j < ci->i_reserved_count; j++) {
-            put_block(sbi, ci->i_reserved_start + j);
+	spin_lock(&inode->i_lock);
+    start = ci->i_reserved_start;
+    count = ci->i_reserved_count;
+    ci->i_reserved_start = 0;   /* zéro sous verrou = pas de double free */
+    ci->i_reserved_count = 0;
+    spin_unlock(&inode->i_lock);
+
+	if (count) {
+		for (uint32_t j = 0; j < count; j++) {
+            put_block(sbi, start + j);
         }
-        ci->i_reserved_start = 0;
-        ci->i_reserved_count = 0;
 	}
 
 	/*
@@ -366,7 +372,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	if (S_ISDIR(inode->i_mode))
 		goto scrub;
 
-	for (i = 0; i < OUICHEFS_MAX_EXTENTS - 1; i++) {
+	for (i = 0; i < OUICHEFS_MAX_EXTENTS; i++) {
 		char * block;
 
 		uint32_t start = file_block->blocks[i].start;

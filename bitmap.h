@@ -85,10 +85,12 @@ static inline int put_free_bit(unsigned long *freemap, unsigned long size,
  */
 static inline void put_inode(struct ouichefs_sb_info *sbi, uint32_t ino)
 {
+	spin_lock(&sbi->bitmap_lock);
 	if (put_free_bit(sbi->ifree_bitmap, sbi->nr_inodes, ino))
 		return;
 
 	sbi->nr_free_inodes++;
+	spin_unlock(&sbi->bitmap_lock);
 	pr_debug("%s:%d: freed inode %u\n", __func__, __LINE__, ino);
 }
 
@@ -181,7 +183,7 @@ static inline uint32_t get_contiguous_free_bits(unsigned long *freemap,
         start = next_zero;
     }
 
-    // if best_len is stilll 0, there're absolutely no free blocks left on disk
+    // if best_len is still 0, there're absolutely no free blocks left on disk
     if (best_len == 0)
         return 0;
 
@@ -209,6 +211,7 @@ static inline uint32_t ouichefs_alloc_contiguous(struct super_block *sb,
     // nothing to do if 0 blocks are requested
     if (requested == 0) return 0;
 
+	spin_lock(&sbi->bitmap_lock);
     // use helper to scan the in-memory bitmap and claim the bits
     bno = get_contiguous_free_bits(sbi->bfree_bitmap, sbi->nr_blocks, requested, &allocated);
 
@@ -219,6 +222,8 @@ static inline uint32_t ouichefs_alloc_contiguous(struct super_block *sb,
         // chose to print a debug message to the kernel log (dmesg) so we can see it working
         pr_debug("%s:%d: allocated %u contiguous blocks starting at %u\n", __func__, __LINE__, allocated, bno);
     }
+
+	spin_unlock(&sbi->bitmap_lock);
 
     // pass the physical block number back to the caller
     *start_bno = bno;
