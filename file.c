@@ -555,23 +555,12 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 			return -EIO;
 		index = (struct ouichefs_file_index_block *)bh_index->b_data;
 
-		/*
 		for (iblock = 0; index->blocks[iblock].count != 0; iblock++) {
 			//put_block(sbi, le32_to_cpu(index->blocks[iblock]));
 			//index->blocks[iblock] = 0;
 			put_block(sbi, index->blocks[iblock].start);
 			index->blocks[iblock] = (struct ouichefs_extent){0, 0};
 		}
-		*/		
-
-		for (iblock = 0; index->blocks[iblock].count != 0; iblock++) {
-			// Q1.9 FIX: Do not free physical block 0 (it's a hole!) 
-			if (index->blocks[iblock].start != 0) {
-				put_block(sbi, index->blocks[iblock].start);
-			}
-			index->blocks[iblock] = (struct ouichefs_extent){0, 0};
-		}
-
 		inode->i_size = 0;
 		inode->i_blocks = 1;
 
@@ -808,125 +797,6 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 /* 1.3.2 Debugging ioctl */
 #define OUICHEFS_IOC_GET_EXTENTS _IO('O', 1)
 
-#define OUICHEFS_IOC_DEFRAG_FILE _IO('O', 2) //Q1.10
-
-/* HELPER 1: Handles the block-by-block data copying and frees the old extents */
-static void ouichefs_copy_defrag_data(struct super_block *sb, 
-                                      struct ouichefs_file_index_block *index, 
-                                      uint32_t new_start) 
-{
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-	uint32_t logical_block = 0;
-	int i;
-
-	for (i = 0; i < OUICHEFS_MAX_EXTENTS; i++) {
-		uint32_t old_start = index->blocks[i].start;
-		uint32_t old_count = index->blocks[i].count;
-		uint32_t j;
-
-		if (old_count == 0) break;
-
-		for (j = 0; j < old_count; j++) {
-			// Get the brand new block from memory
-			struct buffer_head *bh_new = sb_getblk(sb, new_start + logical_block);
-			
-			if (old_start == 0) {
-				// Q1.9 INTEGRATION: It's a hole! Fill the new block with zeros
-				memset(bh_new->b_data, 0, OUICHEFS_BLOCK_SIZE);
-			} else {
-				// Real data: Read the old block from disk and copy it over
-				struct buffer_head *bh_old = sb_bread(sb, old_start + j);
-				if (bh_old) {
-					memcpy(bh_new->b_data, bh_old->b_data, OUICHEFS_BLOCK_SIZE);
-					brelse(bh_old);
-				} else {
-					memset(bh_new->b_data, 0, OUICHEFS_BLOCK_SIZE);
-				}
-				// Return the old block to the free bitmap
-				put_block(sbi, old_start + j);
-			}
-
-			// Tell the kernel to save the new block 
-			set_buffer_uptodate(bh_new);
-			mark_buffer_dirty(bh_new);
-			sync_dirty_buffer(bh_new);
-			brelse(bh_new);
-
-			logical_block++;
-		}
-		// Erase the old extent from the array
-		index->blocks[i] = (struct ouichefs_extent){0, 0};
-	}
-}
-
-/* HELPER 2: Orchestrates the defragmentation process for a file */
-static long ouichefs_do_defrag(struct file *file)
-{
-	struct inode* inode = file->f_inode;
-	struct super_block *sb = inode->i_sb;
-	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-	struct ouichefs_file_index_block *index;
-	struct buffer_head *bh_index;
-	uint32_t total_blocks, new_start = 0, allocated;
-	int i;
-
-	inode_lock(inode);
-
-	// calculate how many blocks the file needs in total
-	total_blocks = (inode->i_size + OUICHEFS_BLOCK_SIZE - 1) / OUICHEFS_BLOCK_SIZE;
-	if (total_blocks <= 1) {
-		inode_unlock(inode);
-		return 0; /* Nothing to defragment! */
-	}
-
-	// Read the index block
-	bh_index = sb_bread(sb, ci->index_block);
-	if (!bh_index) {
-		inode_unlock(inode);
-		return -EIO;
-	}
-	index = (struct ouichefs_file_index_block *)bh_index->b_data;
-
-	// Check if it is ALREADY defragmented
-	if (index->blocks[1].count == 0 && index->blocks[0].start != 0) {
-		brelse(bh_index);
-		inode_unlock(inode);
-		return 0;
-	}
-
-	// Try to allocate a single massive contiguous chunk 
-	allocated = ouichefs_alloc_contiguous(sb, total_blocks, &new_start);
-	if (allocated < total_blocks) {
-		// Not enough contiguous space on the disk! Abort cleanly.
-		for (i = 0; i < allocated; i++) {
-			put_block(OUICHEFS_SB(sb), new_start + i);
-		}
-		brelse(bh_index);
-		inode_unlock(inode);
-		pr_err("ouichefs: Cannot defrag, disk is too fragmented!\n");
-		return -ENOSPC;
-	}
-
-	// Call our copy helper (HELPER1) to do the heavy lifting!
-	ouichefs_copy_defrag_data(sb, index, new_start);
-
-	// Write the glorious single extent at the top of the array!
-	index->blocks[0].start = new_start;
-	index->blocks[0].count = total_blocks;
-
-	mark_buffer_dirty(bh_index);
-	sync_dirty_buffer(bh_index);
-	brelse(bh_index);
-	
-	inode->i_mtime = inode_get_ctime(inode) = current_time(inode);
-	mark_inode_dirty(inode);
-
-	inode_unlock(inode);
-	pr_info("ouichefs: Defragmented inode %lu into %u blocks at physical block %u\n", inode->i_ino, total_blocks, new_start);
-	
-	return 0;
-}
-
 long ouichefs_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
 	switch (cmd) {
 		case OUICHEFS_IOC_GET_EXTENTS :
@@ -965,8 +835,7 @@ long ouichefs_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
 
 				break;
 			}
-			case OUICHEFS_IOC_DEFRAG_FILE:
-				return ouichefs_do_defrag(file);
+
 		default :
 			return -ENOTTY;
 	}
@@ -1089,7 +958,9 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 	off = *offset;
 
 	// On vérifie qu'il y a assez de blocks libres
-	nr_allocs = max((loff_t)(off + len),(loff_t)inode->i_size) / OUICHEFS_BLOCK_SIZE;
+	// 1.8
+	//nr_allocs = max((loff_t)(off + len),(loff_t)inode->i_size) / OUICHEFS_BLOCK_SIZE;
+	nr_allocs = DIV_ROUND_UP(max((loff_t)(off + len),(loff_t)inode->i_size),OUICHEFS_BLOCK_SIZE);
 
 	if (nr_allocs > inode->i_blocks - 1)
 		nr_allocs -= inode->i_blocks - 1;
@@ -1110,44 +981,6 @@ ssize_t ouichefs_write(struct file* file, const char __user* buf, size_t len, lo
 	}
 	index = (struct ouichefs_file_index_block *)bh_index->b_data;
 	struct ouichefs_extent* extents = index->blocks;
-
-	// -----------------> Q1.9: SPARSE FILE HOLE INJECTION LOGIC
-	uint32_t old_blocks = (inode->i_size + OUICHEFS_BLOCK_SIZE - 1) / OUICHEFS_BLOCK_SIZE;
-	uint32_t new_start_block = off / OUICHEFS_BLOCK_SIZE;
-
-	// Did the user seek past the end of the file, creating a gap?
-	if (new_start_block > old_blocks) {
-		uint32_t hole_blocks = new_start_block - old_blocks;
-		int i, last_ext_idx = -1;
-
-		// find the last valid extent in the array 
-		for (i = 0; i < OUICHEFS_MAX_EXTENTS; i++) {
-			if (extents[i].count == 0) break;
-			last_ext_idx = i;
-		}
-
-		// ceck if the last extent is ALSO a hole, so we can merge them!
-		if (last_ext_idx >= 0 && extents[last_ext_idx].start == 0) {
-			extents[last_ext_idx].count += hole_blocks;
-		} else {
-			// create a brand new hole extent slot
-			int new_ext_idx = last_ext_idx + 1;
-			if (new_ext_idx < OUICHEFS_MAX_EXTENTS) {
-				extents[new_ext_idx].start = 0; /* 0 means HOLE */
-				extents[new_ext_idx].count = hole_blocks;
-			} else {
-				pr_err("ouichefs: Out of extent slots while injecting hole!\n");
-				brelse(bh_index);
-				inode_unlock(inode);
-				return -ENOSPC;
-			}
-		}
-		
-		// save the injected hole to disk before we start writing real data
-		mark_buffer_dirty(bh_index);
-		sync_dirty_buffer(bh_index);
-	}
-	/* ----------------------------------*/
 
 	// On calcul l'indice du premier bloc à écrire
 	iblock = off / OUICHEFS_BLOCK_SIZE;

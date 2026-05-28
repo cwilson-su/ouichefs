@@ -13,10 +13,350 @@
 #include <linux/slab.h>
 #include <linux/statfs.h>
 
+// 1.8
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
+#include <linux/string.h>
+
 #include "ouichefs.h"
 #include "bitmap.h"
 
 static struct kmem_cache *ouichefs_inode_cache;
+
+
+// 1.8
+struct ouichefs_stats {
+	uint32_t free_blocks;
+	uint32_t committed_blocks;
+	uint32_t reserved_blocks;
+	uint32_t files;
+	uint32_t total_extents;
+	uint32_t avg_extent_size;
+	uint32_t max_file_size;
+	uint32_t fragmentation;
+	uint32_t reservation_size_value;
+	uint32_t gc_runs;
+};
+
+
+struct ouichefs_sysfs_entry {
+	struct kobject kobj;
+	struct super_block *sb;
+};
+
+
+/* represente /sys/ouichefs */
+static struct kobject *ouichefs_root_kobj;
+
+static uint32_t ouichefs_count_reserved_blocks(struct super_block *sb)
+{
+	struct inode *inode;
+	uint32_t reserved = 0;
+
+	spin_lock(&sb->s_inode_list_lock);
+
+	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
+		struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+		reserved += ci->i_reserved_count;
+	}
+
+	spin_unlock(&sb->s_inode_list_lock);
+
+	return reserved;
+}
+
+
+static void ouichefs_compute_stats(struct super_block *sb,
+				   struct ouichefs_stats *stats)
+{
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	uint32_t ino;
+
+	memset(stats, 0, sizeof(*stats));
+
+	stats->free_blocks = sbi->nr_free_blocks;
+	stats->reserved_blocks = ouichefs_count_reserved_blocks(sb);
+	stats->reservation_size_value = reservation_size;
+	stats->gc_runs = sbi->gc_runs;
+
+	for (ino = 0; ino < sbi->nr_inodes; ino++) {
+		struct buffer_head *bh_inode = NULL;
+		struct ouichefs_inode *disk_inode;
+		uint32_t inode_block;
+		uint32_t inode_shift;
+		uint32_t mode;
+		uint32_t index_block;
+		uint32_t size;
+		int i;
+
+		
+		if (test_bit(ino, sbi->ifree_bitmap))
+			continue;
+
+		inode_block = (ino / OUICHEFS_INODES_PER_BLOCK) + 1;
+		inode_shift = ino % OUICHEFS_INODES_PER_BLOCK;
+
+		bh_inode = sb_bread(sb, inode_block);
+		if (!bh_inode)
+			continue;
+
+		disk_inode = (struct ouichefs_inode *)bh_inode->b_data;
+		disk_inode += inode_shift;
+
+		mode = le32_to_cpu(disk_inode->i_mode);
+
+		if (!S_ISREG(mode)) {
+			brelse(bh_inode);
+			continue;
+		}
+
+		stats->files++;
+
+		size = le32_to_cpu(disk_inode->i_size);
+		if (size > stats->max_file_size)
+			stats->max_file_size = size;
+
+		index_block = le32_to_cpu(disk_inode->index_block);
+
+		brelse(bh_inode);
+
+		if (index_block) {
+			struct buffer_head *bh_index;
+			struct ouichefs_file_index_block *index;
+
+			bh_index = sb_bread(sb, index_block);
+			if (!bh_index)
+				continue;
+
+			index = (struct ouichefs_file_index_block *)bh_index->b_data;
+
+			for (i = 0; i < OUICHEFS_MAX_EXTENTS; i++) {
+				uint32_t start = index->blocks[i].start;
+				uint32_t count = index->blocks[i].count;
+
+				if (count == 0)
+					break;
+
+				stats->total_extents++;
+
+				
+				if (start != 0)
+					stats->committed_blocks += count;
+			}
+
+			brelse(bh_index);
+		}
+	}
+
+	if (stats->total_extents > 0)
+		stats->avg_extent_size =
+			(stats->committed_blocks * 100) / stats->total_extents;
+
+	if (stats->files > 0)
+		stats->fragmentation =
+			(stats->total_extents * 100) / stats->files;
+}
+
+enum ouichefs_stat_id {
+	OUICHEFS_SYSFS_FREE_BLOCKS,
+	OUICHEFS_SYSFS_COMMITTED_BLOCKS,
+	OUICHEFS_SYSFS_RESERVED_BLOCKS,
+	OUICHEFS_SYSFS_FILES,
+	OUICHEFS_SYSFS_TOTAL_EXTENTS,
+	OUICHEFS_SYSFS_AVG_EXTENT_SIZE,
+	OUICHEFS_SYSFS_MAX_FILE_SIZE,
+	OUICHEFS_SYSFS_FRAGMENTATION,
+	OUICHEFS_SYSFS_RESERVATION_SIZE,
+	OUICHEFS_SYSFS_GC_RUNS,
+};
+
+struct ouichefs_sysfs_attr {
+	struct kobj_attribute attr;
+	enum ouichefs_stat_id id;
+};
+
+static ssize_t ouichefs_sysfs_show(struct kobject *kobj,
+				   struct kobj_attribute *attr,
+				   char *buf)
+{
+	struct ouichefs_sysfs_entry *entry;
+	struct ouichefs_sysfs_attr *ouichefs_attr;
+	struct ouichefs_stats stats;
+	uint32_t value = 0;
+
+	entry = container_of(kobj, struct ouichefs_sysfs_entry, kobj);
+	ouichefs_attr = container_of(attr, struct ouichefs_sysfs_attr, attr);
+
+	ouichefs_compute_stats(entry->sb, &stats);
+
+	switch (ouichefs_attr->id) {
+	case OUICHEFS_SYSFS_FREE_BLOCKS:
+		value = stats.free_blocks;
+		break;
+	case OUICHEFS_SYSFS_COMMITTED_BLOCKS:
+		value = stats.committed_blocks;
+		break;
+	case OUICHEFS_SYSFS_RESERVED_BLOCKS:
+		value = stats.reserved_blocks;
+		break;
+	case OUICHEFS_SYSFS_FILES:
+		value = stats.files;
+		break;
+	case OUICHEFS_SYSFS_TOTAL_EXTENTS:
+		value = stats.total_extents;
+		break;
+	case OUICHEFS_SYSFS_AVG_EXTENT_SIZE:
+		value = stats.avg_extent_size;
+		break;
+	case OUICHEFS_SYSFS_MAX_FILE_SIZE:
+		value = stats.max_file_size;
+		break;
+	case OUICHEFS_SYSFS_FRAGMENTATION:
+		value = stats.fragmentation;
+		break;
+	case OUICHEFS_SYSFS_RESERVATION_SIZE:
+		value = stats.reservation_size_value;
+		break;
+	case OUICHEFS_SYSFS_GC_RUNS:
+		value = stats.gc_runs;
+		break;
+	}
+
+	return sysfs_emit(buf, "%u\n", value);
+}
+
+static ssize_t ouichefs_reservation_size_store(struct kobject *kobj,
+					       struct kobj_attribute *attr,
+					       const char *buf,
+					       size_t count)
+{
+	uint32_t value;
+	int ret;
+
+	ret = kstrtou32(buf, 10, &value);
+	if (ret)
+		return ret;
+
+	if (value == 0)
+		return -EINVAL;
+
+	reservation_size = value;
+
+	return count;
+}
+
+#define OUICHEFS_RO_ATTR(_name, _id)					\
+	static struct ouichefs_sysfs_attr ouichefs_attr_##_name = {	\
+		.attr = __ATTR(_name, 0444, ouichefs_sysfs_show, NULL),	\
+		.id = _id,						\
+	}
+
+OUICHEFS_RO_ATTR(free_blocks, OUICHEFS_SYSFS_FREE_BLOCKS);
+OUICHEFS_RO_ATTR(committed_blocks, OUICHEFS_SYSFS_COMMITTED_BLOCKS);
+OUICHEFS_RO_ATTR(reserved_blocks, OUICHEFS_SYSFS_RESERVED_BLOCKS);
+OUICHEFS_RO_ATTR(files, OUICHEFS_SYSFS_FILES);
+OUICHEFS_RO_ATTR(total_extents, OUICHEFS_SYSFS_TOTAL_EXTENTS);
+OUICHEFS_RO_ATTR(avg_extent_size, OUICHEFS_SYSFS_AVG_EXTENT_SIZE);
+OUICHEFS_RO_ATTR(max_file_size, OUICHEFS_SYSFS_MAX_FILE_SIZE);
+OUICHEFS_RO_ATTR(fragmentation, OUICHEFS_SYSFS_FRAGMENTATION);
+OUICHEFS_RO_ATTR(gc_runs, OUICHEFS_SYSFS_GC_RUNS);
+
+static struct ouichefs_sysfs_attr ouichefs_attr_reservation_size = {
+	.attr = __ATTR(reservation_size, 0644,
+		       ouichefs_sysfs_show,
+		       ouichefs_reservation_size_store),
+	.id = OUICHEFS_SYSFS_RESERVATION_SIZE,
+};
+
+static const struct attribute *ouichefs_sysfs_attrs[] = {
+	&ouichefs_attr_free_blocks.attr.attr,
+	&ouichefs_attr_committed_blocks.attr.attr,
+	&ouichefs_attr_reserved_blocks.attr.attr,
+	&ouichefs_attr_files.attr.attr,
+	&ouichefs_attr_total_extents.attr.attr,
+	&ouichefs_attr_avg_extent_size.attr.attr,
+	&ouichefs_attr_max_file_size.attr.attr,
+	&ouichefs_attr_fragmentation.attr.attr,
+	&ouichefs_attr_reservation_size.attr.attr,
+	&ouichefs_attr_gc_runs.attr.attr,
+	NULL,
+};
+
+static void ouichefs_sysfs_release(struct kobject *kobj)
+{
+	struct ouichefs_sysfs_entry *entry;
+
+	entry = container_of(kobj, struct ouichefs_sysfs_entry, kobj);
+	kfree(entry);
+}
+
+static const struct kobj_type ouichefs_sysfs_ktype = {
+	.release = ouichefs_sysfs_release,
+	.sysfs_ops = &kobj_sysfs_ops,
+};
+
+int ouichefs_sysfs_init(void)
+{
+	ouichefs_root_kobj = kobject_create_and_add("ouichefs", NULL);
+	if (!ouichefs_root_kobj)
+		return -ENOMEM;
+
+	return 0;
+}
+
+void ouichefs_sysfs_exit(void)
+{
+	kobject_put(ouichefs_root_kobj);
+	ouichefs_root_kobj = NULL;
+}
+
+int ouichefs_sysfs_register_sb(struct super_block *sb)
+{
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct ouichefs_sysfs_entry *entry;
+	int ret;
+
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	if (!entry)
+		return -ENOMEM;
+
+	entry->sb = sb;
+
+	ret = kobject_init_and_add(&entry->kobj,
+				   &ouichefs_sysfs_ktype,
+				   ouichefs_root_kobj,
+				   "%s",
+				   sb->s_id);
+	if (ret) {
+		kobject_put(&entry->kobj);
+		return ret;
+	}
+
+	ret = sysfs_create_files(&entry->kobj, ouichefs_sysfs_attrs);
+	if (ret) {
+		kobject_put(&entry->kobj);
+		return ret;
+	}
+
+	sbi->sysfs_entry = entry;
+
+	return 0;
+}
+
+void ouichefs_sysfs_unregister_sb(struct super_block *sb)
+{
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+
+	if (!sbi || !sbi->sysfs_entry)
+		return;
+
+	sysfs_remove_files(&sbi->sysfs_entry->kobj, ouichefs_sysfs_attrs);
+	kobject_put(&sbi->sysfs_entry->kobj);
+	sbi->sysfs_entry = NULL;
+}
+
+
+// fin 1.8
 
 int ouichefs_init_inode_cache(void)
 {
@@ -27,6 +367,7 @@ int ouichefs_init_inode_cache(void)
 		return -ENOMEM;
 	return 0;
 }
+
 
 void ouichefs_destroy_inode_cache(void)
 {
@@ -185,6 +526,9 @@ static void ouichefs_put_super(struct super_block *sb)
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 
 	if (sbi) {
+
+		ouichefs_sysfs_unregister_sb(sb);
+
 		kfree(sbi->ifree_bitmap);
 		kfree(sbi->bfree_bitmap);
 		kfree(sbi);
@@ -346,8 +690,17 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 		ret = -ENOMEM;
 		goto free_bfree;
 	}
+	// 1.8
+	ret = ouichefs_sysfs_register_sb(sb);
+	if (ret)
+		goto free_root;
 
 	return 0;
+
+// 1.8	
+free_root:
+	dput(sb->s_root);
+	sb->s_root = NULL;
 
 free_bfree:
 	kfree(sbi->bfree_bitmap);

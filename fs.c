@@ -64,17 +64,27 @@ static int __init ouichefs_init(void)
 		goto err;
 	}
 
+	ret = ouichefs_sysfs_init();
+	if (ret) {
+		pr_err("sysfs init failed\n");
+		goto err_inode;
+
+	}
 	ret = register_filesystem(&ouichefs_file_system_type);
 	if (ret) {
 		pr_err("register_filesystem() failed\n");
-		goto err_inode;
+		goto err_sysfs;
 	}
 
 	pr_info("module loaded\n");
 	return 0;
 
+err_sysfs:
+	ouichefs_sysfs_exit();
+
 err_inode:
 	ouichefs_destroy_inode_cache();
+
 err:
 	return ret;
 }
@@ -87,7 +97,11 @@ static void __exit ouichefs_exit(void)
 	if (ret)
 		pr_err("unregister_filesystem() failed\n");
 
+	ouichefs_sysfs_exit();
+
 	ouichefs_destroy_inode_cache();
+
+	
 
 	pr_info("module unloaded\n");
 }

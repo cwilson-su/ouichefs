@@ -99,3 +99,14 @@ ouichefs_unlink (modifié) → A Tester
 voir file.c
 
 ouichefs_garbage_collector → A Tester
+
+### 1.8
+
+voir ouichefs.h
+
+voir super.c
+
+voir file.c
+
+voir fs.c
+

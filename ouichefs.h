@@ -8,6 +8,8 @@
 #define _OUICHEFS_H
 
 #include <linux/fs.h>
+// 1.8 
+#include <linux/kobject.h>
 
 #define OUICHEFS_MAGIC 0x48434957
 
@@ -65,6 +67,10 @@ struct ouichefs_inode_info {
 #define OUICHEFS_INODES_PER_BLOCK \
 	(OUICHEFS_BLOCK_SIZE / sizeof(struct ouichefs_inode))
 
+
+// 1.8 
+struct ouichefs_sysfs_entry;
+
 struct ouichefs_sb_info {
 	uint32_t magic; /* Magic number */
 
@@ -82,6 +88,9 @@ struct ouichefs_sb_info {
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
 
 	uint32_t gc_runs; /* Number of Garbage collector call */ // Q 1.7.4
+
+	
+	struct ouichefs_sysfs_entry *sysfs_entry; // 1.8
 };
 
 /* 1.3.1 Data structures */
@@ -114,6 +123,13 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent);
 int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
 struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino);
+
+// 1.8 
+int ouichefs_sysfs_init(void);
+void ouichefs_sysfs_exit(void);
+int ouichefs_sysfs_register_sb(struct super_block *sb);
+void ouichefs_sysfs_unregister_sb(struct super_block *sb);
+
 
 /* file functions */
 extern const struct file_operations ouichefs_file_ops;
