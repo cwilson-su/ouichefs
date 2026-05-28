@@ -18,7 +18,7 @@
 
 /* 1.4.1 Logical-to-physical block translation */
 static uint32_t ouichefs_extent_get_block(
-	struct ouichefs_extent *extents, uint32_t logical_block, sector_t* extent_id)
+	struct ouichefs_extent *extents, uint32_t logical_block, sector_t *extent_id)
 {
 	sector_t iblock;
 	uint32_t physical_block = 0;
@@ -32,57 +32,50 @@ static uint32_t ouichefs_extent_get_block(
 			if (extent_id)
 				*extent_id = iblock;
 			break;
-		}
-			
+		}	
 
 		if (logical_block >= block && logical_block < block + count) {
 			if (extent_id)
 				*extent_id = iblock;
 
-			if (start == 0) 
-				break;
+			if (start == 0) break;
 
 			physical_block = start + logical_block - block;
 			break;
 		}
-		
 		block += count;
 	}
 
-	if (iblock == OUICHEFS_MAX_EXTENTS) 
-		if (extent_id) 
-			*extent_id = OUICHEFS_MAX_EXTENTS; // logical_block est en dehors de la table des extents
-	
+	if (iblock == OUICHEFS_MAX_EXTENTS)  {
+		if (extent_id) *extent_id = OUICHEFS_MAX_EXTENTS; // logical_block est en dehors de la table des extents
+	}
 	return physical_block;
 }
 
 /* 1.7.4 Garbage collector */
-static void ouichefs_garbage_collector(struct super_block* sb)
+static void ouichefs_garbage_collector(struct super_block *sb)
 {
-	struct ouichefs_sb_info* sbi = OUICHEFS_SB(sb);
-	struct inode* inode;
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct inode *inode;
 
 	sbi->gc_runs++;
 
 	spin_lock(&sb->s_inode_list_lock);
 
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
-		
-		struct ouichefs_inode_info* ci = OUICHEFS_INODE(inode);
-		uint32_t start, count;
+		struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 
 		spin_lock(&inode->i_lock);
-        start = ci->i_reserved_start;
-        count = ci->i_reserved_count;
+        uint32_t start = ci->i_reserved_start;
+        uint32_t count = ci->i_reserved_count;
         /* Zéro atomiquement sous verrou — plus de double free possible */
         ci->i_reserved_start = 0;
         ci->i_reserved_count = 0;
         spin_unlock(&inode->i_lock);
-		
 		/* Libération HORS des deux verrous pour éviter deadlock */
         if (count > 0) {
             for (uint32_t i = 0; i < count; i++)
-                put_block(sbi, start + i);
+				put_block(sbi, start + i);
         }
 	}
 
@@ -91,7 +84,7 @@ static void ouichefs_garbage_collector(struct super_block* sb)
 
 /* 1.6.2 Integration */
 static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
-				   struct buffer_head *bh_result, int create, uint32_t* requested)
+				   struct buffer_head *bh_result, int create, uint32_t *requested)
 {
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
@@ -106,7 +99,7 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
 	bool in_window = true;
 	uint32_t new_window;
 
-	if (*requested == 0) 
+	if (*requested == 0)
 		return 0;
 
 	/* Read index block from disk */
@@ -138,7 +131,7 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
 				index->blocks[last_extent_id].count += ci->i_reserved_count;
 				*requested -= ci->i_reserved_count;
 				ci->i_reserved_start += ci->i_reserved_count;
-				ci->i_reserved_count = 0;	
+				ci->i_reserved_count = 0;
 			} else {
 				bno = ci->i_reserved_start;
 				index->blocks[last_extent_id].count += *requested;
@@ -196,9 +189,8 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
 				uint32_t insert_count = allocated_block - new_window;
 
 				/* 1. Calculate our exact position inside the hole */
-				for (int i = 0; i < current_extent_id; i++) {
+				for (int i = 0; i < current_extent_id; i++)
 					extent_logical_start += index->blocks[i].count;
-				}
 
 				uint32_t extent_logical_end = extent_logical_start + index->blocks[current_extent_id].count;
 
@@ -216,9 +208,8 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
 
 					for (int i = OUICHEFS_MAX_EXTENTS - 1; i > current_extent_id; i--) {
 						index->blocks[i] = index->blocks[i - 1];
-						if (i == current_extent_id + 1) {
+						if (i == current_extent_id + 1)
 							index->blocks[i].count -= insert_count;
-						}
 					}
 
 					index->blocks[current_extent_id].start = bno;
@@ -248,7 +239,7 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
 					offset = logical_block - extent_logical_start;
 					
 					if (offset + insert_count == extent_logical_end) {
-							if (index->blocks[OUICHEFS_MAX_EXTENTS - 1].start != 0) {
+						if (index->blocks[OUICHEFS_MAX_EXTENTS - 1].start != 0) {
 							ret = -ENOSPC;
 							goto brelse_index;
 						}
@@ -293,7 +284,7 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
 		}
 dirty_index:
 		mark_buffer_dirty(bh_index);
-	} 
+	}
 
 	/* Map the physical block to the given buffer_head */
 	map_bh(bh_result, sb, bno);
@@ -325,9 +316,9 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 		index = (struct ouichefs_file_index_block *)bh_index->b_data;
 
 		for (iblock = 0; index->blocks[iblock].count != 0; iblock++) {
-			if (index->blocks[iblock].start) {
+			if (index->blocks[iblock].start)
 				put_block(sbi, index->blocks[iblock].start);
-			}
+
 			index->blocks[iblock] = (struct ouichefs_extent){0, 0};
 		}
 		inode->i_size = 0;
@@ -343,8 +334,8 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 
 /* HELPER 1: Handles the block-by-block data copying and frees the old extents */
 static void ouichefs_copy_defrag_data(struct super_block *sb, 
-                                      struct ouichefs_file_index_block *index, 
-                                      uint32_t new_start) 
+                                    struct ouichefs_file_index_block *index,
+                                    uint32_t new_start) 
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	uint32_t logical_block = 0;
@@ -355,7 +346,8 @@ static void ouichefs_copy_defrag_data(struct super_block *sb,
 		uint32_t old_count = index->blocks[i].count;
 		uint32_t j;
 
-		if (old_count == 0) break;
+		if (old_count == 0) 
+			break;
 
 		for (j = 0; j < old_count; j++) {
 			// Get the brand new block from memory
@@ -367,6 +359,7 @@ static void ouichefs_copy_defrag_data(struct super_block *sb,
 			} else {
 				// Real data: Read the old block from disk and copy it over
 				struct buffer_head *bh_old = sb_bread(sb, old_start + j);
+				
 				if (bh_old) {
 					memcpy(bh_new->b_data, bh_old->b_data, OUICHEFS_BLOCK_SIZE);
 					brelse(bh_old);
@@ -376,7 +369,6 @@ static void ouichefs_copy_defrag_data(struct super_block *sb,
 				// Return the old block to the free bitmap
 				put_block(sbi, old_start + j);
 			}
-
 			// Tell the kernel to save the new block 
 			set_buffer_uptodate(bh_new);
 			mark_buffer_dirty(bh_new);
@@ -393,7 +385,7 @@ static void ouichefs_copy_defrag_data(struct super_block *sb,
 /* HELPER 2: Orchestrates the defragmentation process for a file */
 static long ouichefs_do_defrag(struct file *file)
 {
-	struct inode* inode = file->f_inode;
+	struct inode *inode = file->f_inode;
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct ouichefs_file_index_block *index;
@@ -424,14 +416,13 @@ static long ouichefs_do_defrag(struct file *file)
 		inode_unlock(inode);
 		return 0;
 	}
-
 	// Try to allocate a single massive contiguous chunk 
 	allocated = ouichefs_alloc_contiguous(sb, total_blocks, &new_start);
 	if (allocated < total_blocks) {
 		// Not enough contiguous space on the disk! Abort cleanly.
-		for (i = 0; i < allocated; i++) {
+		for (i = 0; i < allocated; i++)
 			put_block(OUICHEFS_SB(sb), new_start + i);
-		}
+
 		brelse(bh_index);
 		inode_unlock(inode);
 		pr_err("ouichefs: Cannot defrag, disk is too fragmented!\n");
@@ -448,7 +439,7 @@ static long ouichefs_do_defrag(struct file *file)
 	mark_buffer_dirty(bh_index);
 	sync_dirty_buffer(bh_index);
 	brelse(bh_index);
-	
+
 	inode->i_mtime = inode->i_ctime = current_time(inode);
 	mark_inode_dirty(inode);
 
@@ -462,50 +453,51 @@ static long ouichefs_do_defrag(struct file *file)
 #define OUICHEFS_IOC_GET_EXTENTS _IO('O', 1)
 #define OUICHEFS_IOC_DEFRAG_FILE _IO('O', 2) //Q1.10
 
-long ouichefs_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
+long ouichefs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
 	switch (cmd) {
-		case OUICHEFS_IOC_GET_EXTENTS :
-			{
-				struct inode* inode = file->f_inode;
-				struct super_block *sb = inode->i_sb;
-				struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-				struct ouichefs_file_index_block *index;
-				struct buffer_head *bh_index;
-				sector_t iblock;
-				int nb_extents = 0;
+	case OUICHEFS_IOC_GET_EXTENTS:
+		{
+			struct inode *inode = file->f_inode;
+			struct super_block *sb = inode->i_sb;
+			struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+			struct ouichefs_file_index_block *index;
+			struct buffer_head *bh_index;
+			sector_t iblock;
+			int nb_extents = 0;
 
-				// Read index block from disk 
-				bh_index = sb_bread(sb, ci->index_block);
-				if (!bh_index){
-					pr_err("Failed to read inode block %d\n", ci->index_block);
-					return -EIO;
-				}
-				index = (struct ouichefs_file_index_block *)bh_index->b_data;			
-				
-				for (int i = 0; index->blocks[i].count != 0; i++) 
-					nb_extents++;
-
-				pr_info("ouichefs: extents for inode %lu: %d extent(s)\n", inode->i_ino, nb_extents);
-
-				for (iblock = 0; index->blocks[iblock].count != 0; iblock++) {
-					struct ouichefs_extent ext = index->blocks[iblock];
-
-					if (ext.start == 0)
-						pr_info("	[%llu] HOLE count=%u\n", iblock, ext.count);
-					else
-						pr_info("	[%llu] start=%u count=%u (blocks %u-%u)\n", iblock, ext.start, ext.count, ext.start, ext.start + ext.count - 1);
-				}
-
-				brelse(bh_index);
-
-				break;
+			// Read index block from disk 
+			bh_index = sb_bread(sb, ci->index_block);
+			if (!bh_index) {
+				pr_err("Failed to read inode block %d\n", ci->index_block);
+				return -EIO;
 			}
-		
-		case OUICHEFS_IOC_DEFRAG_FILE:
-			return ouichefs_do_defrag(file);
+			index = (struct ouichefs_file_index_block *)bh_index->b_data;
+			
+			for (int i = 0; index->blocks[i].count != 0; i++) 
+				nb_extents++;
 
-		default :
-			return -ENOTTY;
+			pr_info("ouichefs: extents for inode %lu: %d extent(s)\n", inode->i_ino, nb_extents);
+
+			for (iblock = 0; index->blocks[iblock].count != 0; iblock++) {
+				struct ouichefs_extent ext = index->blocks[iblock];
+
+				if (ext.start == 0)
+					pr_info("	[%llu] HOLE count=%u\n", iblock, ext.count);
+				else
+					pr_info("	[%llu] start=%u count=%u (blocks %u-%u)\n", iblock, ext.start, ext.count, ext.start, ext.start + ext.count - 1);
+			}
+
+			brelse(bh_index);
+
+			break;
+		}
+	
+	case OUICHEFS_IOC_DEFRAG_FILE:
+		return ouichefs_do_defrag(file);
+
+	default:
+		return -ENOTTY;
 	}
 
 	return 0;
