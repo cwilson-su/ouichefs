@@ -385,17 +385,68 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t logical_block,
 				goto brelse_index;
 			}
 
-			// Si on est dans un trou
-			/*if (index->blocks[current_extent_id].count != 0) {
-		
+			// -----> Q1.9.5: EXTENT SPLITTING (WRITING INSIDE A HOLE)
+			if (index->blocks[current_extent_id].count != 0 && index->blocks[current_extent_id].start == 0) {
+				uint32_t extent_logical_start = 0;
+				uint32_t offset, hole_size, right_hole_size;
+				uint32_t insert_count = allocated_block - new_window;
+				int i, end_idx, extra_slots = 0;
+				int write_idx = current_extent_id;
+
+				/* 1. Calculate our exact position inside the hole */
+				for (i = 0; i < current_extent_id; i++) {
+					extent_logical_start += index->blocks[i].count;
+				}
+				offset = logical_block - extent_logical_start;
+				hole_size = index->blocks[current_extent_id].count;
+
+				/* Cap insertion so we don't overflow the hole bounds */
+				if (insert_count > hole_size - offset) {
+					insert_count = hole_size - offset;
+				}
+				right_hole_size = hole_size - offset - insert_count;
+
+				/* 2. Calculate how many new array slots we need (up to 2 extra) */
+				if (offset > 0 && right_hole_size > 0) extra_slots = 2;
+				else if (offset > 0 || right_hole_size > 0) extra_slots = 1;
+
+				/* 3. Shift the existing extents to the right to make room */
+				if (extra_slots > 0) {
+					for (end_idx = 0; end_idx < OUICHEFS_MAX_EXTENTS; end_idx++) {
+						if (index->blocks[end_idx].count == 0) break;
+					}
+					if (end_idx + extra_slots >= OUICHEFS_MAX_EXTENTS) {
+						ret = -ENOSPC; // Out of extent slots!
+						goto brelse_index;
+					}
+					// Shift elements backwards to avoid overwriting 
+					for (i = end_idx - 1; i > current_extent_id; i--) {
+						index->blocks[i + extra_slots] = index->blocks[i];
+					}
+				}
+
+				/* 4. Insert the new split pieces! */
+				if (offset > 0) {
+					index->blocks[write_idx].start = 0;
+					index->blocks[write_idx].count = offset;
+					write_idx++;
+				}
+				
+				index->blocks[write_idx].start = bno;
+				index->blocks[write_idx].count = insert_count;
+				write_idx++;
+				
+				if (right_hole_size > 0) {
+					index->blocks[write_idx].start = 0;
+					index->blocks[write_idx].count = right_hole_size;
+				}
 
 			} else {
+				/* NORMAL APPEND (Not inside a hole) */
 				index->blocks[current_extent_id].start = bno;
-				index->blocks[current_extent_id].count = 1;
-			}*/
-			// !!! On ne gère pas encore les trous
-			index->blocks[current_extent_id].start = bno;
-			index->blocks[current_extent_id].count = allocated_block - new_window;
+				index->blocks[current_extent_id].count = allocated_block - new_window;
+			}
+			/* ============================================================== */
 		}
 dirty_index:
 		mark_buffer_dirty(bh_index);
